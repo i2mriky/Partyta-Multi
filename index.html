@@ -960,6 +960,25 @@
             }, 2000);
         }
         
+        // TURN HANDOVER FIX: Global sync helper
+        function syncGameState() {
+            const isOnline = state.multiplayer.mode === 'host' || state.multiplayer.mode === 'client';
+            if (isOnline && state.multiplayer.isHost && window.db && state.multiplayer.roomCode) {
+                console.log('🔄 SYNC: Writing game state to Firebase:', {
+                    currentPlayerIndex: state.currentGame.currentPlayerIndex,
+                    phase: state.currentGame.phase,
+                    type: state.currentGame.type
+                });
+                
+                const currentGameRef = window.rtdb.ref(window.db, `rooms/${state.multiplayer.roomCode}/currentGame`);
+                window.rtdb.set(currentGameRef, state.currentGame).then(() => {
+                    console.log('✅ SYNC: Game state written successfully');
+                }).catch((error) => {
+                    console.error('❌ SYNC ERROR:', error);
+                });
+            }
+        }
+        
         // Leave room and cleanup
         function leaveRoom() {
             if (!confirm('هل أنت متأكد من الخروج من الغرفة؟')) return;
@@ -1592,11 +1611,24 @@
             window.rtdb.onValue(currentGameRef, (snapshot) => {
                 if (snapshot.exists()) {
                     const gameData = snapshot.val();
-                    console.log('🧠 BRAIN SYNC: Game data updated from host:', gameData);
+                    console.log('🧠 BRAIN SYNC: Game data updated from host:', {
+                        type: gameData.type,
+                        phase: gameData.phase,
+                        currentPlayerIndex: gameData.currentPlayerIndex,
+                        word: gameData.word ? '***' : 'none'
+                    });
                     
                     // CRITICAL: Overwrite local game state with host's authoritative state
                     state.currentGame = gameData;
                     saveState();
+                    
+                    // TURN HANDOVER FIX: Log current player for debugging
+                    if (state.players && state.players[gameData.currentPlayerIndex]) {
+                        const currentPlayer = state.players[gameData.currentPlayerIndex];
+                        console.log('🧠 BRAIN SYNC: Current turn is for:', currentPlayer.name, '(ID:', currentPlayer.id, ')');
+                        console.log('🧠 BRAIN SYNC: My ID is:', state.user.id);
+                        console.log('🧠 BRAIN SYNC: Is it my turn?', currentPlayer.id === state.user.id ? '✅ YES' : '❌ NO');
+                    }
                     
                     // Re-render to reflect new state (new turn, new phase, etc.)
                     render();
@@ -3206,17 +3238,8 @@
             
             saveState();
             
-            // FIX #2: Host writes game data to Firebase (Brain Sync)
-            const isOnline = state.multiplayer.mode === 'host' || state.multiplayer.mode === 'client';
-            if (isOnline && state.multiplayer.isHost && window.db && state.multiplayer.roomCode) {
-                console.log('🧠 HOST: Writing game data to Firebase:', state.currentGame);
-                const currentGameRef = window.rtdb.ref(window.db, `rooms/${state.multiplayer.roomCode}/currentGame`);
-                window.rtdb.set(currentGameRef, state.currentGame).then(() => {
-                    console.log('✅ Game data synced to Firebase');
-                }).catch((error) => {
-                    console.error('❌ Error syncing game data:', error);
-                });
-            }
+            // TURN HANDOVER FIX: Use global sync helper
+            syncGameState();
             
             render();
         }
@@ -3241,17 +3264,8 @@
             
             saveState(); 
             
-            // FIX #2: Host writes game data to Firebase (Brain Sync)
-            const isOnline = state.multiplayer.mode === 'host' || state.multiplayer.mode === 'client';
-            if (isOnline && state.multiplayer.isHost && window.db && state.multiplayer.roomCode) {
-                console.log('🧠 HOST: Writing game data to Firebase:', state.currentGame);
-                const currentGameRef = window.rtdb.ref(window.db, `rooms/${state.multiplayer.roomCode}/currentGame`);
-                window.rtdb.set(currentGameRef, state.currentGame).then(() => {
-                    console.log('✅ Game data synced to Firebase');
-                }).catch((error) => {
-                    console.error('❌ Error syncing game data:', error);
-                });
-            }
+            // TURN HANDOVER FIX: Use global sync helper
+            syncGameState();
             
             render(); 
         }
@@ -3324,17 +3338,8 @@
             
             saveState();
             
-            // FIX #3: Host syncs turn changes to Firebase (Brain Sync)
-            const isOnline = state.multiplayer.mode === 'host' || state.multiplayer.mode === 'client';
-            if (isOnline && state.multiplayer.isHost && window.db && state.multiplayer.roomCode) {
-                console.log('🧠 HOST: Syncing turn change to Firebase. New index:', state.currentGame.currentPlayerIndex, 'Phase:', state.currentGame.phase);
-                const currentGameRef = window.rtdb.ref(window.db, `rooms/${state.multiplayer.roomCode}/currentGame`);
-                window.rtdb.set(currentGameRef, state.currentGame).then(() => {
-                    console.log('✅ Turn change synced to Firebase');
-                }).catch((error) => {
-                    console.error('❌ Error syncing turn change:', error);
-                });
-            }
+            // TURN HANDOVER FIX: Force sync immediately after turn change
+            syncGameState();
             
             render();
         }
@@ -3386,12 +3391,8 @@
                 state.currentGame.votingPlayerIndex++;
                 saveState();
                 
-                // FIX #3: Sync vote progress to Firebase
-                const isOnline = state.multiplayer.mode === 'host' || state.multiplayer.mode === 'client';
-                if (isOnline && state.multiplayer.isHost && window.db && state.multiplayer.roomCode) {
-                    const currentGameRef = window.rtdb.ref(window.db, `rooms/${state.multiplayer.roomCode}/currentGame`);
-                    window.rtdb.set(currentGameRef, state.currentGame);
-                }
+                // TURN HANDOVER FIX: Use global sync helper
+                syncGameState();
                 
                 playSound('click');
                 render();
@@ -3429,12 +3430,8 @@
                 playSound(spyFound ? 'success' : 'fail');
                 saveState();
                 
-                // FIX #3: Sync final results to Firebase
-                const isOnline = state.multiplayer.mode === 'host' || state.multiplayer.mode === 'client';
-                if (isOnline && state.multiplayer.isHost && window.db && state.multiplayer.roomCode) {
-                    const currentGameRef = window.rtdb.ref(window.db, `rooms/${state.multiplayer.roomCode}/currentGame`);
-                    window.rtdb.set(currentGameRef, state.currentGame);
-                }
+                // TURN HANDOVER FIX: Use global sync helper
+                syncGameState();
                 
                 render();
             }
