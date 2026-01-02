@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>El Partyta Multi</title>
+    <title>لعبة القعدة - Multi</title>
     
     <!-- PWA Manifest -->
     <link rel="manifest" href="manifest.json">
@@ -711,8 +711,8 @@
                                 return;
                             }
                             
-                            // Navigate using the exact ID extracted from DOM
-                            navigate(winner.id);
+                            // Use launchGame for multiplayer support
+                            launchGame(winner.id);
                         }, 300);
                     }, 1000);
                 }, 100);
@@ -944,6 +944,20 @@
             } else {
                 alert('الكود: ' + code);
             }
+        }
+        
+        // Show toast notification
+        function showToast(message, type = 'info') {
+            const bgColor = type === 'error' ? 'bg-red-600' : type === 'success' ? 'bg-green-600' : 'bg-blue-600';
+            const toast = document.createElement('div');
+            toast.className = `fixed top-20 left-1/2 -translate-x-1/2 ${bgColor} text-white px-6 py-3 rounded-full font-bold shadow-2xl z-[100] animate-in`;
+            toast.innerText = message;
+            document.body.appendChild(toast);
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transition = 'opacity 0.3s';
+                setTimeout(() => toast.remove(), 300);
+            }, 2000);
         }
         
         // Leave room and cleanup
@@ -1299,9 +1313,28 @@
                         
                         // Check if room status changed to 'playing' (Host started game)
                         if (roomData.metadata && roomData.metadata.status === 'playing' && !isHost) {
+                            // Client: Sync players from lobby before redirecting
+                            if (roomData.players) {
+                                const lobbyPlayers = Object.values(roomData.players).map((p, index) => ({
+                                    id: p.id,
+                                    name: p.name,
+                                    score: 0,
+                                    teamId: null
+                                }));
+                                
+                                // CRITICAL: Overwrite state.players with lobby players
+                                state.players = lobbyPlayers;
+                                
+                                // Store in multiplayer state for reference
+                                state.multiplayer.players = lobbyPlayers;
+                                
+                                console.log('✅ Synced players from lobby:', lobbyPlayers.length);
+                            }
+                            
                             // Client: Auto-redirect to home when host starts
                             console.log('🎮 Host started the game! Redirecting to home...');
                             playSound('success');
+                            saveState();
                             navigate('home');
                             return; // Stop further processing
                         }
@@ -1380,16 +1413,46 @@
                 return;
             }
             
-            playSound('success');
+            const roomCode = state.multiplayer.roomCode;
+            if (!window.db || !roomCode) return;
             
-            // Update room status in Firebase
-            if (window.db && state.multiplayer.roomCode) {
-                const statusRef = window.rtdb.ref(window.db, `rooms/${state.multiplayer.roomCode}/metadata/status`);
-                window.rtdb.set(statusRef, 'playing');
-            }
-            
-            // Navigate to home (not players - players already synced in lobby)
-            navigate('home');
+            // CRITICAL: Sync players from lobby to state.players
+            const roomRef = window.rtdb.ref(window.db, `rooms/${roomCode}`);
+            window.rtdb.get(roomRef).then((snapshot) => {
+                if (snapshot.exists()) {
+                    const roomData = snapshot.val();
+                    
+                    if (roomData.players) {
+                        const lobbyPlayers = Object.values(roomData.players).map((p, index) => ({
+                            id: p.id,
+                            name: p.name,
+                            score: 0,
+                            teamId: null
+                        }));
+                        
+                        // CRITICAL: Overwrite state.players with lobby players
+                        state.players = lobbyPlayers;
+                        
+                        // Store in multiplayer state for reference
+                        state.multiplayer.players = lobbyPlayers;
+                        
+                        console.log('✅ Host synced players from lobby:', lobbyPlayers.length);
+                        saveState();
+                    }
+                    
+                    // Update room status to 'playing'
+                    const statusRef = window.rtdb.ref(window.db, `rooms/${roomCode}/metadata/status`);
+                    window.rtdb.set(statusRef, 'playing');
+                    
+                    playSound('success');
+                    
+                    // Navigate to home (not players - players already synced in lobby)
+                    navigate('home');
+                }
+            }).catch((error) => {
+                console.error('❌ Error starting game:', error);
+                showToast('فشل بدء اللعبة', 'error');
+            });
         }
         
         // ===== BLIND TURN PROTECTION SYSTEM =====
@@ -1483,6 +1546,35 @@
         }
 
         // ===== RENDER =====
+        // PILLAR 4: Initialize game state listener for multiplayer
+        function initGameStateListener() {
+            // Only set up listener if in online mode
+            const isOnline = state.multiplayer.mode === 'host' || state.multiplayer.mode === 'client';
+            const roomCode = state.multiplayer.roomCode;
+            
+            if (!isOnline || !window.db || !roomCode) return;
+            
+            // Don't listen if you're the host (host controls the game)
+            if (state.multiplayer.isHost) return;
+            
+            console.log('👂 Setting up game state listener for room:', roomCode);
+            
+            const gameStateRef = window.rtdb.ref(window.db, `rooms/${roomCode}/gameState`);
+            window.rtdb.onValue(gameStateRef, (snapshot) => {
+                if (snapshot.exists()) {
+                    const gameState = snapshot.val();
+                    console.log('🎮 Game state changed:', gameState);
+                    
+                    // If game changed, navigate to that game
+                    if (gameState.game && gameState.game !== state.screen) {
+                        console.log('🚀 Client auto-navigating to:', gameState.game);
+                        playSound('success');
+                        navigate(gameState.game);
+                    }
+                }
+            });
+        }
+        
         function render() {
             const container = document.getElementById('screen-container');
             
@@ -1496,7 +1588,13 @@
                 return; // Stop here until user enters name
             }
             
-            // STEP 2: Render the appropriate screen
+            // STEP 2: Initialize game state listener (only once)
+            if (!window.gameStateListenerInitialized) {
+                initGameStateListener();
+                window.gameStateListenerInitialized = true;
+            }
+            
+            // STEP 3: Render the appropriate screen
             if (state.screen === 'home') container.innerHTML = renderHome();
             else if (state.screen === 'mode_selection') container.innerHTML = renderModeSelection();
             else if (state.screen === 'lobby_menu') container.innerHTML = renderLobbyMenu();
@@ -1551,6 +1649,7 @@
         function renderHome() {
             // Check if in online multiplayer mode
             const isOnline = state.multiplayer.mode === 'host' || state.multiplayer.mode === 'client';
+            const isClient = state.multiplayer.mode === 'client';
             const roomCode = state.multiplayer.roomCode;
             
             // Get player count from Firebase (will be updated by listener)
@@ -1566,6 +1665,63 @@
                 });
             }
             
+            // PILLAR 2: If CLIENT, show waiting room instead of game grid
+            if (isClient) {
+                return `
+                    <div class="flex flex-col h-screen p-4 bg-slate-800">
+                        <!-- User Identity Badge -->
+                        <div class="text-center pt-4 pb-2">
+                            <div class="inline-flex items-center gap-2 bg-slate-700 border border-slate-600 rounded-full px-4 py-2 mb-2">
+                                <span class="text-2xl">👤</span>
+                                <span class="text-white font-bold">${escapeHtml(state.user.name)}</span>
+                                <button onclick="changeUserName()" class="text-slate-400 hover:text-white transition ml-1">
+                                    <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <!-- Live Room Status Bar -->
+                        <div onclick="navigate('lobby')" class="mb-3 cursor-pointer">
+                            <div class="bg-gradient-to-r from-indigo-600 to-purple-600 rounded-2xl p-3 border-2 border-indigo-400 shadow-lg animate-pulse hover:scale-[1.02] transition">
+                                <div class="flex items-center justify-between text-white">
+                                    <div class="flex items-center gap-2">
+                                        <div class="w-2 h-2 rounded-full bg-green-400 animate-pulse"></div>
+                                        <span class="font-bold text-sm">🟢 أونلاين</span>
+                                    </div>
+                                    <div class="flex items-center gap-3 text-sm font-bold">
+                                        <span>كود: ${roomCode || '---'}</span>
+                                        <span>|</span>
+                                        <span><span id="room-player-count">${playerCount}</span> لاعبين</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="text-center pb-4">
+                            <h1 class="text-4xl font-black text-white mb-1">لعبة القعدة</h1>
+                            <p class="text-slate-200 font-medium">اللمة متحلاش غير بيها</p>
+                        </div>
+                        
+                        <!-- CLIENT WAITING ROOM -->
+                        <div class="flex-1 flex items-center justify-center">
+                            <div class="bg-slate-700 border-2 border-indigo-500/50 rounded-3xl p-8 max-w-md w-full text-center shadow-2xl">
+                                <div class="text-7xl mb-6 animate-pulse">⏳</div>
+                                <h2 class="text-2xl font-bold text-white mb-3">في انتظار المضيف</h2>
+                                <p class="text-slate-300 mb-6 leading-relaxed">
+                                    المضيف بيختار اللعبة دلوقتي...<br>
+                                    استنى شوية وهتشوف اللعبة تلقائياً 🎮
+                                </p>
+                                <button onclick="leaveRoom()" class="w-full py-3 bg-red-600 hover:bg-red-700 text-white rounded-2xl font-bold transition shadow-lg flex items-center justify-center gap-2">
+                                    <span>🚪</span>
+                                    <span>خروج من الغرفة</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // HOST or LOCAL: Show full game grid
             return `
                 <div class="flex flex-col h-screen p-4 bg-slate-800">
                     <!-- User Identity Badge -->
@@ -1657,9 +1813,47 @@
                 </div>`;
         }
 
+        // PILLAR 3: Generic game launcher for multiplayer support
+        function launchGame(gameId) {
+            const isOnline = state.multiplayer.mode === 'host' || state.multiplayer.mode === 'client';
+            const isHost = state.multiplayer.mode === 'host';
+            
+            // If local mode, just navigate normally
+            if (!isOnline) {
+                navigate(gameId);
+                return;
+            }
+            
+            // If client, do nothing (clients can't select games)
+            if (!isHost) {
+                showToast('⚠️ المضيف هو اللي بيختار اللعبة!', 'error');
+                return;
+            }
+            
+            // If host, update Firebase gameState
+            const roomCode = state.multiplayer.roomCode;
+            if (window.db && roomCode) {
+                const gameStateRef = window.rtdb.ref(window.db, `rooms/${roomCode}/gameState`);
+                window.rtdb.set(gameStateRef, {
+                    game: gameId,
+                    status: 'setup',
+                    timestamp: Date.now()
+                }).then(() => {
+                    console.log('✅ Host launched game:', gameId);
+                    playSound('success');
+                    // Navigate locally (clients will follow via listener)
+                    navigate(gameId);
+                }).catch((error) => {
+                    console.error('❌ Error launching game:', error);
+                    showToast('فشل تشغيل اللعبة', 'error');
+                });
+            }
+        }
+        
         function menuButton(screen, title, subtitle, color) { 
             const iconPath = GAME_ICONS[screen] || 'icons/default.png';
-            return `<button onclick="navigate('${screen}')" class="w-full aspect-square p-3 rounded-3xl shadow-xl text-white flex flex-col items-center justify-center text-center transition transform active:scale-95 hover:scale-[1.02] ${color} group gap-2"><div class="w-20 h-20 flex items-center justify-center"><img src="${iconPath}" class="w-full h-full object-contain drop-shadow-md transform transition-transform group-hover:scale-110" alt="${title}" /></div><div><span class="text-lg font-bold block leading-tight">${title}</span><span class="text-xs opacity-90 block mt-1 leading-tight">${subtitle}</span></div></button>`; 
+            // Use launchGame instead of navigate for multiplayer support
+            return `<button onclick="launchGame('${screen}')" class="w-full aspect-square p-3 rounded-3xl shadow-xl text-white flex flex-col items-center justify-center text-center transition transform active:scale-95 hover:scale-[1.02] ${color} group gap-2"><div class="w-20 h-20 flex items-center justify-center"><img src="${iconPath}" class="w-full h-full object-contain drop-shadow-md transform transition-transform group-hover:scale-110" alt="${title}" /></div><div><span class="text-lg font-bold block leading-tight">${title}</span><span class="text-xs opacity-90 block mt-1 leading-tight">${subtitle}</span></div></button>`; 
         }
         function renderPlayers() {
             const teamActive = state.teamMode;
