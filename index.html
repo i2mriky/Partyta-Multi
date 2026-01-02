@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>لعبة القعدة - Multi</title>
+    <title>لعبة القعدة - النسخة الأصلية</title>
     
     <!-- PWA Manifest -->
     <link rel="manifest" href="manifest.json">
@@ -1575,6 +1575,37 @@
             });
         }
         
+        // FIX #1: "Brain Sync" Listener - Syncs actual game data (word, spy, turns)
+        function initCurrentGameListener() {
+            // Only set up listener if in online mode
+            const isOnline = state.multiplayer.mode === 'host' || state.multiplayer.mode === 'client';
+            const roomCode = state.multiplayer.roomCode;
+            
+            if (!isOnline || !window.db || !roomCode) return;
+            
+            // Don't listen if you're the host (host is the authority)
+            if (state.multiplayer.isHost) return;
+            
+            console.log('🧠 Setting up BRAIN SYNC listener for room:', roomCode);
+            
+            const currentGameRef = window.rtdb.ref(window.db, `rooms/${roomCode}/currentGame`);
+            window.rtdb.onValue(currentGameRef, (snapshot) => {
+                if (snapshot.exists()) {
+                    const gameData = snapshot.val();
+                    console.log('🧠 BRAIN SYNC: Game data updated from host:', gameData);
+                    
+                    // CRITICAL: Overwrite local game state with host's authoritative state
+                    state.currentGame = gameData;
+                    saveState();
+                    
+                    // Re-render to reflect new state (new turn, new phase, etc.)
+                    render();
+                } else {
+                    console.log('🧠 BRAIN SYNC: No game data (game ended or not started)');
+                }
+            });
+        }
+        
         function render() {
             const container = document.getElementById('screen-container');
             
@@ -1588,9 +1619,10 @@
                 return; // Stop here until user enters name
             }
             
-            // STEP 2: Initialize game state listener (only once)
+            // STEP 2: Initialize game state listeners (only once)
             if (!window.gameStateListenerInitialized) {
                 initGameStateListener();
+                initCurrentGameListener(); // FIX #1: Brain Sync Listener
                 window.gameStateListenerInitialized = true;
             }
             
@@ -3158,12 +3190,71 @@
             }
             const word = getUniqueItem('spy_mix', allWords);
             const spyIndex = Math.floor(Math.random() * state.players.length);
-            state.currentGame = { type: 'spy', phase: 'reveal', category: 'كوكتيل 🔀', word, spyIndex, currentPlayerIndex: 0, revealed: false, timeLeft: 120, votes: {}, votingPlayerIndex: 0 };
+            
+            state.currentGame = { 
+                type: 'spy', 
+                phase: 'reveal', 
+                category: 'كوكتيل 🔀', 
+                word, 
+                spyIndex, 
+                currentPlayerIndex: 0, 
+                revealed: false, 
+                timeLeft: 120, 
+                votes: {}, 
+                votingPlayerIndex: 0 
+            };
+            
             saveState();
+            
+            // FIX #2: Host writes game data to Firebase (Brain Sync)
+            const isOnline = state.multiplayer.mode === 'host' || state.multiplayer.mode === 'client';
+            if (isOnline && state.multiplayer.isHost && window.db && state.multiplayer.roomCode) {
+                console.log('🧠 HOST: Writing game data to Firebase:', state.currentGame);
+                const currentGameRef = window.rtdb.ref(window.db, `rooms/${state.multiplayer.roomCode}/currentGame`);
+                window.rtdb.set(currentGameRef, state.currentGame).then(() => {
+                    console.log('✅ Game data synced to Firebase');
+                }).catch((error) => {
+                    console.error('❌ Error syncing game data:', error);
+                });
+            }
+            
             render();
         }
         
-        function startSpyGame(cat) { const words = SPY_CATEGORIES[cat] || SPY_CATEGORIES['أماكن خروج']; const word = getUniqueItem('spy_' + cat, words); const spyIndex = Math.floor(Math.random() * state.players.length); state.currentGame = { type: 'spy', phase: 'reveal', category: cat, word, spyIndex, currentPlayerIndex: 0, revealed: false, timeLeft: 120, votes: {}, votingPlayerIndex: 0 }; saveState(); render(); }
+        function startSpyGame(cat) { 
+            const words = SPY_CATEGORIES[cat] || SPY_CATEGORIES['أماكن خروج']; 
+            const word = getUniqueItem('spy_' + cat, words); 
+            const spyIndex = Math.floor(Math.random() * state.players.length); 
+            
+            state.currentGame = { 
+                type: 'spy', 
+                phase: 'reveal', 
+                category: cat, 
+                word, 
+                spyIndex, 
+                currentPlayerIndex: 0, 
+                revealed: false, 
+                timeLeft: 120, 
+                votes: {}, 
+                votingPlayerIndex: 0 
+            }; 
+            
+            saveState(); 
+            
+            // FIX #2: Host writes game data to Firebase (Brain Sync)
+            const isOnline = state.multiplayer.mode === 'host' || state.multiplayer.mode === 'client';
+            if (isOnline && state.multiplayer.isHost && window.db && state.multiplayer.roomCode) {
+                console.log('🧠 HOST: Writing game data to Firebase:', state.currentGame);
+                const currentGameRef = window.rtdb.ref(window.db, `rooms/${state.multiplayer.roomCode}/currentGame`);
+                window.rtdb.set(currentGameRef, state.currentGame).then(() => {
+                    console.log('✅ Game data synced to Firebase');
+                }).catch((error) => {
+                    console.error('❌ Error syncing game data:', error);
+                });
+            }
+            
+            render(); 
+        }
         function revealSpyWord() {
             if (state.currentGame.revealed) return;
             
@@ -3229,7 +3320,22 @@
             } else { 
                 state.currentGame.phase = 'discuss'; 
                 startSpyTimer(); 
-            } 
+            }
+            
+            saveState();
+            
+            // FIX #3: Host syncs turn changes to Firebase (Brain Sync)
+            const isOnline = state.multiplayer.mode === 'host' || state.multiplayer.mode === 'client';
+            if (isOnline && state.multiplayer.isHost && window.db && state.multiplayer.roomCode) {
+                console.log('🧠 HOST: Syncing turn change to Firebase. New index:', state.currentGame.currentPlayerIndex, 'Phase:', state.currentGame.phase);
+                const currentGameRef = window.rtdb.ref(window.db, `rooms/${state.multiplayer.roomCode}/currentGame`);
+                window.rtdb.set(currentGameRef, state.currentGame).then(() => {
+                    console.log('✅ Turn change synced to Firebase');
+                }).catch((error) => {
+                    console.error('❌ Error syncing turn change:', error);
+                });
+            }
+            
             render();
         }
         function startSpyTimer() {
@@ -3275,8 +3381,18 @@
         function voteForSpy(suspectedPlayerId) {
             const voter = state.players[state.currentGame.votingPlayerIndex];
             state.currentGame.votes[voter.id] = suspectedPlayerId;
+            
             if (state.currentGame.votingPlayerIndex < state.players.length - 1) {
                 state.currentGame.votingPlayerIndex++;
+                saveState();
+                
+                // FIX #3: Sync vote progress to Firebase
+                const isOnline = state.multiplayer.mode === 'host' || state.multiplayer.mode === 'client';
+                if (isOnline && state.multiplayer.isHost && window.db && state.multiplayer.roomCode) {
+                    const currentGameRef = window.rtdb.ref(window.db, `rooms/${state.multiplayer.roomCode}/currentGame`);
+                    window.rtdb.set(currentGameRef, state.currentGame);
+                }
+                
                 playSound('click');
                 render();
             } else {
@@ -3312,6 +3428,14 @@
                 state.currentGame.phase = 'result';
                 playSound(spyFound ? 'success' : 'fail');
                 saveState();
+                
+                // FIX #3: Sync final results to Firebase
+                const isOnline = state.multiplayer.mode === 'host' || state.multiplayer.mode === 'client';
+                if (isOnline && state.multiplayer.isHost && window.db && state.multiplayer.roomCode) {
+                    const currentGameRef = window.rtdb.ref(window.db, `rooms/${state.multiplayer.roomCode}/currentGame`);
+                    window.rtdb.set(currentGameRef, state.currentGame);
+                }
+                
                 render();
             }
         }
@@ -3373,10 +3497,9 @@
                     </button>
                 </div>`;
                 
-                // Store current player for turn protection
-                if (!state.currentGame.player) {
-                    state.currentGame.player = p;
-                }
+                // FIX #4: Dynamic turn check - REMOVED buggy static assignment
+                // Set current player dynamically based on currentPlayerIndex
+                state.currentGame.player = p;
                 
                 return renderMultiplayerView(gameHTML);
             } 
