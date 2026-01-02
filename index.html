@@ -1543,20 +1543,36 @@
             
             // If online mode, check turn
             if (state.multiplayer.mode === 'host' || state.multiplayer.mode === 'client') {
-                // Check if there's a current game with a player
-                if (state.currentGame && state.currentGame.player) {
-                    const currentPlayerId = state.currentGame.player.id;
+                // CRITICAL FIX: Calculate current player DYNAMICALLY from currentPlayerIndex
+                if (state.currentGame && state.currentGame.currentPlayerIndex !== undefined && state.players && state.players.length > 0) {
+                    // Get current player based on index (ALWAYS UP TO DATE)
+                    const currentPlayer = state.players[state.currentGame.currentPlayerIndex];
+                    
+                    if (!currentPlayer) {
+                        console.warn('⚠️ renderMultiplayerView: No player at index', state.currentGame.currentPlayerIndex);
+                        return gameHTML; // Fallback: show game
+                    }
+                    
+                    console.log('🔍 TURN CHECK:', {
+                        currentPlayerIndex: state.currentGame.currentPlayerIndex,
+                        currentPlayerName: currentPlayer.name,
+                        currentPlayerId: currentPlayer.id,
+                        myId: state.user.id,
+                        isMyTurn: currentPlayer.id === state.user.id
+                    });
                     
                     // If it's my turn, show the game
-                    if (currentPlayerId === state.user.id) {
+                    if (currentPlayer.id === state.user.id) {
+                        console.log('✅ TURN CHECK: It\'s my turn! Showing game content.');
                         return gameHTML;
                     }
                     
                     // Not my turn - show waiting screen
+                    console.log('⏳ TURN CHECK: Not my turn. Showing waiting screen.');
                     return renderWaitingScreen();
                 }
                 
-                // No current player set - show game (setup phase)
+                // No current game or players - show game (setup phase)
                 return gameHTML;
             }
             
@@ -3331,16 +3347,20 @@
             if(state.currentGame.currentPlayerIndex < state.players.length - 1) { 
                 state.currentGame.currentPlayerIndex++; 
                 state.currentGame.revealed = false; 
+                console.log('🔄 nextSpyPlayer: Incremented to player', state.currentGame.currentPlayerIndex, '(' + state.players[state.currentGame.currentPlayerIndex].name + ')');
             } else { 
                 state.currentGame.phase = 'discuss'; 
                 startSpyTimer(); 
+                console.log('🔄 nextSpyPlayer: Moving to discussion phase');
             }
             
             saveState();
             
             // TURN HANDOVER FIX: Force sync immediately after turn change
+            console.log('🔄 nextSpyPlayer: Calling syncGameState()...');
             syncGameState();
             
+            console.log('🔄 nextSpyPlayer: Calling render()...');
             render();
         }
         function startSpyTimer() {
@@ -3494,9 +3514,8 @@
                     </button>
                 </div>`;
                 
-                // FIX #4: Dynamic turn check - REMOVED buggy static assignment
-                // Set current player dynamically based on currentPlayerIndex
-                state.currentGame.player = p;
+                // CRITICAL FIX: Do NOT set static player object
+                // renderMultiplayerView now calculates player dynamically from currentPlayerIndex
                 
                 return renderMultiplayerView(gameHTML);
             } 
